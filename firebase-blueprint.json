@@ -1,0 +1,209 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Administrator account in the voting system",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "usernameLower": { "type": "string" },
+        "email": { "type": "string" },
+        "emailLower": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "firebaseUid": { "type": "string" }
+      },
+      "required": ["id", "username", "email", "createdAt"]
+    },
+    "Session": {
+      "title": "Session",
+      "description": "Admin user login session",
+      "type": "object",
+      "properties": {
+        "token": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "expiresAt": { "type": "string" }
+      },
+      "required": ["token", "userId", "createdAt", "expiresAt"]
+    },
+    "Meeting": {
+      "title": "Meeting",
+      "description": "A committee meeting or assembly",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "closed"] },
+        "createdAt": { "type": "string" },
+        "closedAt": { "type": "string" },
+        "allowMultipleChoices": { "type": "boolean" },
+        "maxChoices": { "type": "number" },
+        "ataGeneratedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "name", "code", "status", "createdAt"]
+    },
+    "Poll": {
+      "title": "Poll",
+      "description": "A voting poll/item within a meeting",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "meetingId": { "type": "string" },
+        "question": { "type": "string" },
+        "status": { "type": "string", "enum": ["draft", "open", "closed"] },
+        "order": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "openedAt": { "type": "string" },
+        "closedAt": { "type": "string" },
+        "allowMultipleChoices": { "type": "boolean" },
+        "maxChoices": { "type": "number" },
+        "source": { "type": "string" },
+        "sourceDepartmentId": { "type": "string" }
+      },
+      "required": ["id", "meetingId", "question", "status", "order", "createdAt"]
+    },
+    "Option": {
+      "title": "Option",
+      "description": "A choice within a poll",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "pollId": { "type": "string" },
+        "text": { "type": "string" },
+        "order": { "type": "number" }
+      },
+      "required": ["id", "pollId", "text", "order"]
+    },
+    "Vote": {
+      "title": "Vote",
+      "description": "An anonymous vote recorded for a poll option",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "pollId": { "type": "string" },
+        "optionId": { "type": "string" },
+        "anonymousSessionId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "pollId", "optionId", "anonymousSessionId", "createdAt"]
+    },
+    "NominationConfig": {
+      "title": "NominationConfig",
+      "description": "Configuration for meeting nominations",
+      "type": "object",
+      "properties": {
+        "meetingId": { "type": "string" },
+        "publicToken": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["OPEN", "CLOSED"] },
+        "deadline": { "type": "string" }
+      },
+      "required": ["meetingId", "publicToken", "enabled", "status"]
+    },
+    "Nomination": {
+      "title": "Nomination",
+      "description": "A nominee submitted for a department",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "meetingId": { "type": "string" },
+        "departmentId": { "type": "string" },
+        "nomineeName": { "type": "string" },
+        "nominatorSessionId": { "type": "string" },
+        "nominatorName": { "type": "string" },
+        "source": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "meetingId", "departmentId", "nomineeName", "createdAt"]
+    },
+    "SelectedNominee": {
+      "title": "SelectedNominee",
+      "description": "Admin candidate selection from nominations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "meetingId": { "type": "string" },
+        "departmentId": { "type": "string" },
+        "nomineeName": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "meetingId", "departmentId", "nomineeName", "createdAt"]
+    },
+    "ExpectedParticipant": {
+      "title": "ExpectedParticipant",
+      "description": "Expected participant on meeting attendance list",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "meetingId": { "type": "string" },
+        "name": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "meetingId", "name", "createdAt"]
+    },
+    "ParticipantSession": {
+      "title": "ParticipantSession",
+      "description": "Public participant nomination session",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "meetingId": { "type": "string" },
+        "nominatorName": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "finalized": { "type": "boolean" }
+      },
+      "required": ["sessionId", "meetingId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "System administrator user records"
+    },
+    "/sessions/{token}": {
+      "schema": "Session",
+      "description": "Admin authenticated sessions"
+    },
+    "/meetings/{meetingId}": {
+      "schema": "Meeting",
+      "description": "Meeting documents owned by administrators"
+    },
+    "/polls/{pollId}": {
+      "schema": "Poll",
+      "description": "Poll items associated with meetings"
+    },
+    "/options/{optionId}": {
+      "schema": "Option",
+      "description": "Options associated with polls"
+    },
+    "/votes/{voteId}": {
+      "schema": "Vote",
+      "description": "Anonymous votes recorded for polls"
+    },
+    "/nominationConfigs/{meetingId}": {
+      "schema": "NominationConfig",
+      "description": "Per-meeting nomination settings and departments"
+    },
+    "/nominations/{nominationId}": {
+      "schema": "Nomination",
+      "description": "Nomination records submitted for meetings"
+    },
+    "/selectedNominees/{selectionId}": {
+      "schema": "SelectedNominee",
+      "description": "Selected nominees shortlisted for poll creation"
+    },
+    "/expectedParticipants/{participantId}": {
+      "schema": "ExpectedParticipant",
+      "description": "Expected participant roster for meetings"
+    },
+    "/participantSessions/{sessionId}": {
+      "schema": "ParticipantSession",
+      "description": "Participant nomination sessions"
+    }
+  }
+}

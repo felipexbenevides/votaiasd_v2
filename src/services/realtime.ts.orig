@@ -1,0 +1,155 @@
+import { PublicMeetingState, AdminMeetingState, PollResult } from '../types';
+
+export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
+
+export interface SSECallbacks {
+  onStatusChange?: (status: ConnectionStatus) => void;
+  onPublicInit?: (state: PublicMeetingState) => void;
+  onAdminInit?: (state: AdminMeetingState) => void;
+  onPollChanged?: (data: PublicMeetingState | AdminMeetingState) => void;
+  onVoteUpdate?: (data: { pollId: string; totalVotes: number } | PollResult) => void;
+  onPresenceUpdate?: (data: { participantCount: number; participants?: string[] }) => void;
+  onMeetingEnded?: (data: PublicMeetingState | AdminMeetingState) => void;
+}
+
+export class MeetingEventSource {
+  private eventSource: EventSource | null = null;
+  private reconnectTimeout: NodeJS.Timeout | null = null;
+  private isManuallyClosed = false;
+  private code: string;
+  private token: string | null;
+  private sessionId: string | null;
+  private participantName: string | null;
+  private callbacks: SSECallbacks;
+
+  constructor(
+    code: string,
+    callbacks: SSECallbacks,
+    token: string | null = null,
+    sessionId: string | null = null,
+    participantName: string | null = null
+  ) {
+    this.code = code.trim().toUpperCase();
+    this.callbacks = callbacks;
+    this.token = token;
+    this.sessionId = sessionId;
+    this.participantName = participantName;
+    this.connect();
+  }
+
+  public connect(): void {
+    if (this.isManuallyClosed) return;
+
+    if (this.eventSource) {
+      this.eventSource.close();
+    }
+
+    this.callbacks.onStatusChange?.('connecting');
+
+    const query = new URLSearchParams();
+    if (this.token) {
+      query.set('token', this.token);
+    }
+    if (this.sessionId) {
+      query.set('sessionId', this.sessionId);
+    }
+    if (this.participantName) {
+      query.set('name', this.participantName);
+    }
+
+    const url = `/api/meetings/${encodeURIComponent(this.code)}/stream?${query.toString()}`;
+
+    try {
+      this.eventSource = new EventSource(url);
+
+      this.eventSource.onopen = () => {
+        this.callbacks.onStatusChange?.('connected');
+      };
+
+      this.eventSource.onerror = () => {
+        if (this.isManuallyClosed) return;
+        this.callbacks.onStatusChange?.('reconnecting');
+        this.eventSource?.close();
+        this.eventSource = null;
+
+        // Auto retry after 2 seconds
+        if (!this.reconnectTimeout) {
+          this.reconnectTimeout = setTimeout(() => {
+            this.reconnectTimeout = null;
+            this.connect();
+          }, 2000);
+        }
+      };
+
+      this.eventSource.addEventListener('init_public', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          this.callbacks.onPublicInit?.(data);
+        } catch (err) {
+          console.error('Error parsing init_public event:', err);
+        }
+      });
+
+      this.eventSource.addEventListener('init_admin', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          this.callbacks.onAdminInit?.(data);
+        } catch (err) {
+          console.error('Error parsing init_admin event:', err);
+        }
+      });
+
+      this.eventSource.addEventListener('poll_changed', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          this.callbacks.onPollChanged?.(data);
+        } catch (err) {
+          console.error('Error parsing poll_changed event:', err);
+        }
+      });
+
+      this.eventSource.addEventListener('vote_update', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          this.callbacks.onVoteUpdate?.(data);
+        } catch (err) {
+          console.error('Error parsing vote_update event:', err);
+        }
+      });
+
+      this.eventSource.addEventListener('presence_update', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          this.callbacks.onPresenceUpdate?.(data);
+        } catch (err) {
+          console.error('Error parsing presence_update event:', err);
+        }
+      });
+
+      this.eventSource.addEventListener('meeting_ended', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          this.callbacks.onMeetingEnded?.(data);
+        } catch (err) {
+          console.error('Error parsing meeting_ended event:', err);
+        }
+      });
+    } catch (err) {
+      console.error('Failed to create EventSource:', err);
+      this.callbacks.onStatusChange?.('disconnected');
+    }
+  }
+
+  public close(): void {
+    this.isManuallyClosed = true;
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+    this.callbacks.onStatusChange?.('disconnected');
+  }
+}

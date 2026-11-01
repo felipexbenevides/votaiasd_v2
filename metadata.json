@@ -1,0 +1,8 @@
+{
+  "name": "VOTAIASD V.2 — By Pr. Paulo Roberto",
+  "description": "Sistema profissional em tempo real para votações anônimas em reuniões, assembleias e comissões.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,148 @@
+interface SessionPresence {
+  lastSeen: number;
+  name: string;
+}
+
+class PresenceTracker {
+  // Map meetingCode (uppercase) -> Map of sessionId -> SessionPresence
+  private meetings = new Map<string, Map<string, SessionPresence>>();
+  // 45 seconds TTL: allows 3 missed 15s heartbeats before removing
+  private readonly TTL_MS = 45000;
+  private cleanupTimer: NodeJS.Timeout | null = null;
+  private onCountChanged?: (meetingCode: string, count: number, participants: string[]) => void;
+
+  constructor() {
+    this.cleanupTimer = setInterval(() => {
+      this.cleanup();
+    }, 5000);
+  }
+
+  public setListener(listener: (meetingCode: string, count: number, participants: string[]) => void) {
+    this.onCountChanged = listener;
+  }
+
+  /**
+   * Register or refresh heartbeat for an anonymous session.
+   * Reuses the same sessionId without duplicating count.
+   * Associates the participant's first name for presence display only.
+   */
+  public touch(meetingCode: string, sessionId: string, name?: string): boolean {
+    if (!meetingCode || !sessionId) return false;
+    const code = meetingCode.trim().toUpperCase();
+    let sessions = this.meetings.get(code);
+    if (!sessions) {
+      sessions = new Map();
+      this.meetings.set(code, sessions);
+    }
+
+    const now = Date.now();
+    const prev = sessions.get(sessionId);
+    const wasActive = Boolean(prev && (now - prev.lastSeen <= this.TTL_MS));
+
+    // Extract first name only (e.g. 'João Silva' -> 'João')
+    const rawClean = name ? name.trim().split(/\s+/)[0] : '';
+    const resolvedName = rawClean || (prev ? prev.name : '');
+
+    sessions.set(sessionId, {
+      lastSeen: now,
+      name: resolvedName,
+    });
+
+    // If this session is newly connected, was expired, or updated their name, notify
+    if (!wasActive || (rawClean && (!prev || prev.name !== rawClean))) {
+      const activeCount = this.getCount(code);
+      const activeParticipants = this.getParticipants(code);
+      this.onCountChanged?.(code, activeCount, activeParticipants);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Remove an anonymous session immediately (e.g. when participant leaves).
+   */
+  public remove(meetingCode: string, sessionId: string): boolean {
+    if (!meetingCode || !sessionId) return false;
+    const code = meetingCode.trim().toUpperCase();
+    const sessions = this.meetings.get(code);
+    if (!sessions) return false;
+
+    if (sessions.delete(sessionId)) {
+      const activeCount = this.getCount(code);
+      const activeParticipants = this.getParticipants(code);
+      this.onCountChanged?.(code, activeCount, activeParticipants);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Returns how many distinct, active sessions are currently connected.
+   */
+  public getCount(meetingCode: string): number {
+    const code = meetingCode.trim().toUpperCase();
+    const sessions = this.meetings.get(code);
+    if (!sessions) return 0;
+
+    const now = Date.now();
+    let count = 0;
+    for (const [, sessionData] of sessions) {
+      if (now - sessionData.lastSeen <= this.TTL_MS) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Returns the list of first names of currently connected participants.
+   * Duplicate names are preserved (e.g. ['João', 'Maria', 'João']).
+   */
+  public getParticipants(meetingCode: string): string[] {
+    const code = meetingCode.trim().toUpperCase();
+    const sessions = this.meetings.get(code);
+    if (!sessions) return [];
+
+    const now = Date.now();
+    const names: string[] = [];
+    for (const [, sessionData] of sessions) {
+      if (now - sessionData.lastSeen <= this.TTL_MS) {
+        if (sessionData.name && sessionData.name.trim().length > 0) {
+          names.push(sessionData.name.trim());
+        }
+      }
+    }
+    return names;
+  }
+
+  /**
+   * Periodically expire inactive sessions whose lastSeen > TTL_MS.
+   */
+  private cleanup() {
+    const now = Date.now();
+    for (const [code, sessions] of this.meetings) {
+      let expiredCount = 0;
+      for (const [sessionId, sessionData] of sessions) {
+        if (now - sessionData.lastSeen > this.TTL_MS) {
+          sessions.delete(sessionId);
+          expiredCount++;
+        }
+      }
+      if (expiredCount > 0) {
+        const activeCount = this.getCount(code);
+        const activeParticipants = this.getParticipants(code);
+        this.onCountChanged?.(code, activeCount, activeParticipants);
+      }
+    }
+  }
+
+  public destroy() {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    this.meetings.clear();
+  }
+}
+
+export const presenceTracker = new PresenceTracker();

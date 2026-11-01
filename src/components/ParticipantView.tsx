@@ -1,0 +1,760 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  CheckCircle2,
+  Clock,
+  AlertCircle,
+  ArrowRight,
+  ShieldCheck,
+  Radio,
+  Check,
+  RefreshCw,
+  LogOut,
+} from 'lucide-react';
+import { PublicMeetingState, Option } from '../types';
+import { formatMeetingTitle } from '../utils/meetingTitle';
+import {
+  fetchPublicMeeting,
+  checkHasUserVoted,
+  submitVote,
+  getAnonymousSessionId,
+  sendPresenceHeartbeat,
+  sendLeaveMeeting,
+  getStoredParticipantName,
+  setStoredParticipantName,
+} from '../services/api';
+import { MeetingEventSource, ConnectionStatus } from '../services/realtime';
+
+interface ParticipantViewProps {
+  initialCode?: string;
+  onCodeChange?: (code: string) => void;
+}
+
+export const ParticipantView: React.FC<ParticipantViewProps> = ({
+  initialCode = '',
+  onCodeChange,
+}) => {
+  const [meetingCode, setMeetingCode] = useState(initialCode.toUpperCase());
+  const [participantName, setParticipantName] = useState<string>(() => {
+    if (initialCode) {
+      return getStoredParticipantName(initialCode) || '';
+    }
+    return '';
+  });
+  const [nameInput, setNameInput] = useState<string>('');
+  const [meeting, setMeeting] = useState<PublicMeetingState | null>(null);
+
+  // Auto-detect active meeting code if not supplied in URL
+  useEffect(() => {
+    if (!initialCode) {
+      fetch('/api/active-meeting-code')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.code) {
+            setMeetingCode(data.code);
+            const storedName = getStoredParticipantName(data.code);
+            if (storedName) {
+              setParticipantName(storedName);
+            }
+          }
+        })
+        .catch(() => {});
+    }
+  }, [initialCode]);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Voting state
+  const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>([]);
+  const [limitWarning, setLimitWarning] = useState<string | null>(null);
+  const [isSubmittingVote, setIsSubmittingVote] = useState(false);
+  const [hasVotedCurrentPoll, setHasVotedCurrentPoll] = useState(false);
+  const [voteSuccessNotice, setVoteSuccessNotice] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
+
+  const sessionId = getAnonymousSessionId();
+  const lastLoadedCodeRef = useRef<string>('');
+  const isMeetingClosed = meeting?.status === 'MEETING_CLOSED';
+
+  // Load meeting data
+  const loadMeeting = useCallback(
+    async (codeToLoad: string) => {
+      if (!codeToLoad || codeToLoad.trim().length === 0) return;
+      setLoading(true);
+      setErrorMsg(null);
+
+      try {
+        const data = await fetchPublicMeeting(codeToLoad);
+        setMeeting(data);
+        setMeetingCode(data.code);
+        lastLoadedCodeRef.current = data.code;
+        onCodeChange?.(data.code);
+
+        // Check if user has already voted in current open poll
+        if (data.currentPoll && data.currentPoll.status === 'OPEN') {
+          const alreadyVoted = await checkHasUserVoted(data.code, data.currentPoll.id, sessionId);
+          setHasVotedCurrentPoll(alreadyVoted);
+          if (alreadyVoted) {
+            setVoteSuccessNotice(true);
+          }
+        } else {
+          setHasVotedCurrentPoll(false);
+          setVoteSuccessNotice(false);
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Não foi possível encontrar a reunião.';
+        setErrorMsg(message);
+        setMeeting(null);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sessionId, onCodeChange]
+  );
+
+  // If initialCode provided (e.g. from QR Code scan or link), pre-fetch meeting details
+  useEffect(() => {
+    if (initialCode) {
+      const storedName = getStoredParticipantName(initialCode);
+      if (storedName) {
+        setParticipantName(storedName);
+      }
+      if (initialCode !== lastLoadedCodeRef.current) {
+        lastLoadedCodeRef.current = initialCode;
+        loadMeeting(initialCode);
+      }
+    }
+  }, [initialCode, loadMeeting]);
+
+  // Heartbeat presence loop every 60 seconds (only when meeting is active)
+  // with visibilitychange optimization to save CPU/battery when in background
+  useEffect(() => {
+    if (!meeting?.code || isMeetingClosed) return;
+
+    let intervalId: NodeJS.Timeout | null = null;
+
+    const startHeartbeatInterval = () => {
+      if (intervalId) clearInterval(intervalId);
+      intervalId = setInterval(() => {
+        if (!document.hidden) {
+          sendPresenceHeartbeat(meeting.code, sessionId, participantName);
+        }
+      }, 60000);
+    };
+
+    // Send immediately on entering if document is visible
+    if (!document.hidden) {
+      sendPresenceHeartbeat(meeting.code, sessionId, participantName);
+    }
+    startHeartbeatInterval();
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        // Participant returned to tab: send immediate heartbeat and restart 60s countdown
+        sendPresenceHeartbeat(meeting.code, sessionId, participantName);
+        startHeartbeatInterval();
+      }
+    };
+
+    const handleBeforeUnload = () => {
+      const data = JSON.stringify({ sessionId });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(
+          `/api/meetings/${encodeURIComponent(meeting.code)}/leave`,
+          new Blob([data], { type: 'application/json' })
+        );
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [meeting?.code, isMeetingClosed, sessionId, participantName]);
+
+  // Connect to Real-Time SSE when meeting is active
+  useEffect(() => {
+    if (!meeting?.code || isMeetingClosed) return;
+
+    const sse = new MeetingEventSource(
+      meeting.code,
+      {
+        onStatusChange: (status) => {
+          setConnectionStatus(status);
+        },
+        onPublicInit: (state) => {
+          setMeeting(state);
+        },
+        onPresenceUpdate: (data) => {
+          setMeeting((prev) => (prev ? { ...prev, participantCount: data.participantCount } : null));
+        },
+        onPollChanged: async (data) => {
+          const publicData = data as PublicMeetingState;
+          setMeeting(publicData);
+
+          // If the poll changed, reset local selection and verify if user has voted on the new poll
+          if (publicData.currentPoll) {
+            setSelectedOptionIds([]);
+            setLimitWarning(null);
+            if (publicData.currentPoll.status === 'OPEN') {
+              const alreadyVoted = await checkHasUserVoted(
+                publicData.code,
+                publicData.currentPoll.id,
+                sessionId
+              );
+              setHasVotedCurrentPoll(alreadyVoted);
+              setVoteSuccessNotice(alreadyVoted);
+            } else {
+              setHasVotedCurrentPoll(false);
+              setVoteSuccessNotice(false);
+            }
+          } else {
+            setHasVotedCurrentPoll(false);
+            setVoteSuccessNotice(false);
+            setSelectedOptionIds([]);
+          }
+        },
+        onMeetingEnded: (data) => {
+          // Immediately close SSE connection so no background retries occur
+          sse.close();
+          // Notify backend of leave and show closed screen
+          if (meeting?.code) {
+            sendLeaveMeeting(meeting.code, sessionId);
+          }
+          setConnectionStatus('disconnected');
+          setMeeting(data as PublicMeetingState);
+        },
+      },
+      null,
+      sessionId,
+      participantName
+    );
+
+    return () => {
+      sse.close();
+    };
+  }, [meeting?.code, isMeetingClosed, sessionId, participantName]);
+
+  // Handle enter meeting form
+  const handleJoinMeeting = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+
+    const cleanFirstName = nameInput.trim().split(/\s+/)[0] || '';
+    if (!cleanFirstName) {
+      setErrorMsg('Informe seu primeiro nome para entrar.');
+      return;
+    }
+
+    let targetCode = (initialCode || meetingCode).trim().toUpperCase();
+    if (!targetCode) {
+      try {
+        const res = await fetch('/api/active-meeting-code');
+        const data = await res.json();
+        if (data?.code) {
+          targetCode = data.code;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!targetCode) {
+      setErrorMsg('Nenhuma reunião ativa encontrada. Solicite o link ou QR Code ao administrador.');
+      return;
+    }
+
+    setStoredParticipantName(targetCode, cleanFirstName);
+    setParticipantName(cleanFirstName);
+    setMeetingCode(targetCode);
+    loadMeeting(targetCode);
+  };
+
+  const handleResetParticipant = () => {
+    setParticipantName('');
+    setMeeting(null);
+    setMeetingCode('');
+    setSelectedOptionIds([]);
+    setHasVotedCurrentPoll(false);
+    setVoteSuccessNotice(false);
+    setErrorMsg(null);
+    lastLoadedCodeRef.current = '';
+    onCodeChange?.('');
+  };
+
+  const canLeave = meeting?.status === 'MEETING_CLOSED';
+
+  const handleLeaveMeeting = () => {
+    // Regra de Negócio: O participante deve permanecer dentro da reunião durante todo o processo de votação.
+    // O botão existente não permite sair indevidamente durante o processo de votação.
+    if (meeting && meeting.status !== 'MEETING_CLOSED') {
+      return;
+    }
+    if (meeting?.code) {
+      sendLeaveMeeting(meeting.code, sessionId);
+    }
+    setMeeting(null);
+    setMeetingCode('');
+    setSelectedOptionIds([]);
+    setHasVotedCurrentPoll(false);
+    setVoteSuccessNotice(false);
+    setErrorMsg(null);
+    lastLoadedCodeRef.current = '';
+    onCodeChange?.('');
+  };
+
+  // Multiple / Single choice helpers
+  const currentPoll = meeting?.currentPoll;
+  const isMultiple = Boolean(currentPoll?.allowMultiple);
+  const maxChoices = isMultiple ? (currentPoll?.maxChoices || 1) : 1;
+  const canConfirm = isMultiple
+    ? selectedOptionIds.length >= 1 && selectedOptionIds.length <= maxChoices
+    : selectedOptionIds.length === 1;
+
+  const handleToggleOption = (optionId: string) => {
+    if (!isMultiple) {
+      // Single choice: pick or replace
+      setSelectedOptionIds([optionId]);
+      setLimitWarning(null);
+      return;
+    }
+
+    // Multiple choices
+    if (selectedOptionIds.includes(optionId)) {
+      // Deselect
+      setSelectedOptionIds((prev) => prev.filter((id) => id !== optionId));
+      setLimitWarning(null);
+    } else {
+      // Check if limit already reached
+      if (selectedOptionIds.length >= maxChoices) {
+        setLimitWarning(`Você pode selecionar no máximo ${maxChoices} opções.`);
+        return;
+      }
+      setLimitWarning(null);
+      setSelectedOptionIds((prev) => [...prev, optionId]);
+    }
+  };
+
+  // Submit vote
+  const handleConfirmVote = async () => {
+    if (!meeting || !meeting.currentPoll || !canConfirm || isSubmittingVote) return;
+
+    setIsSubmittingVote(true);
+    setErrorMsg(null);
+
+    try {
+      await submitVote(meeting.code, meeting.currentPoll.id, selectedOptionIds, sessionId);
+      setHasVotedCurrentPoll(true);
+      setVoteSuccessNotice(true);
+      setSelectedOptionIds([]);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Erro ao registrar voto.';
+      setErrorMsg(message);
+    } finally {
+      setIsSubmittingVote(false);
+    }
+  };
+
+  // SCREEN 1: Enter Meeting (First name)
+  if (!participantName) {
+    return (
+      <main id="participant-join-screen" className="min-h-[calc(100vh-4rem)] flex items-center justify-center p-4 sm:p-6 bg-[#F9FAFB]">
+        <div className="w-full max-w-sm bg-white rounded-2xl border border-[#E5E7EB] shadow-xs p-6 sm:p-8">
+          <div className="text-center mb-6">
+            <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-[#F3F4F6] border border-[#E5E7EB] text-[#111827] mb-3">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+            <h1 className="text-xl font-bold text-[#111827] tracking-tight uppercase">
+              Entrar na Reunião
+            </h1>
+
+            {meeting ? (
+              <div className="space-y-0.5 mt-3 p-3 bg-[#F9FAFB] border border-[#E5E7EB] rounded-xl text-xs text-center">
+                <p className="font-bold text-[#111827] text-sm">{meeting.name}</p>
+                {meeting.nominationCommissionName && (
+                  <p className="text-[#4B5563]">Congregação: <strong className="text-[#111827]">{meeting.nominationCommissionName}</strong></p>
+                )}
+                <p className="font-mono font-semibold text-[#6B7280]">Código: {meeting.code}</p>
+              </div>
+            ) : (initialCode || meetingCode) ? (
+              <p className="text-xs text-[#6B7280] font-mono font-bold mt-1">
+                Reunião: <span className="text-[#111827]">{(initialCode || meetingCode).toUpperCase()}</span>
+              </p>
+            ) : null}
+          </div>
+
+          <form onSubmit={handleJoinMeeting} className="space-y-4">
+            <div>
+              <label
+                htmlFor="input-participant-name"
+                className="block text-xs font-bold uppercase tracking-widest text-[#6B7280] mb-1.5"
+              >
+                PRIMEIRO NOME
+              </label>
+              <input
+                id="input-participant-name"
+                type="text"
+                maxLength={30}
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                placeholder="Ex: João"
+                className="w-full px-4 py-3 text-sm font-semibold text-[#111827] bg-[#F9FAFB] border border-[#E5E7EB] rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-[#111827] focus:border-transparent transition-all"
+                autoFocus
+                required
+              />
+            </div>
+
+            {errorMsg && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-2 text-rose-700 text-xs">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            <button
+              id="btn-join-meeting"
+              type="submit"
+              disabled={loading || nameInput.trim().length === 0}
+              className="w-full py-4 px-4 bg-[#111827] hover:bg-black disabled:bg-[#E5E7EB] disabled:text-[#9CA3AF] text-white font-bold uppercase tracking-widest text-xs rounded-2xl transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+            >
+              {loading ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Entrando na reunião...</span>
+                </>
+              ) : (
+                <>
+                  <span>Entrar na Reunião</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          </form>
+
+          <div className="mt-6 pt-5 border-t border-[#E5E7EB] text-center">
+            <p className="text-[10px] text-[#9CA3AF] uppercase font-bold tracking-widest">
+              Sistema de Votação Anônimo
+            </p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // SCREEN 1.5: Meeting is Loading or Error when participant name is set
+  if (!meeting) {
+    return (
+      <main id="participant-loading-screen" className="min-h-[calc(100vh-4rem)] flex items-center justify-center p-4 sm:p-6 bg-[#F9FAFB]">
+        <div className="w-full max-w-sm bg-white rounded-2xl border border-[#E5E7EB] shadow-xs p-6 text-center space-y-4">
+          {errorMsg ? (
+            <>
+              <div className="w-12 h-12 mx-auto rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mb-2">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <h2 className="text-base font-bold text-[#111827]">Reunião Não Encontrada</h2>
+              <p className="text-xs text-rose-700 bg-rose-50 p-3 rounded-xl border border-rose-200">{errorMsg}</p>
+              <button
+                type="button"
+                onClick={handleResetParticipant}
+                className="w-full py-2.5 px-4 bg-[#111827] hover:bg-black text-white text-xs font-bold uppercase tracking-wider rounded-xl transition cursor-pointer"
+              >
+                Tentar Outro Código
+              </button>
+            </>
+          ) : (
+            <>
+              <RefreshCw className="w-6 h-6 animate-spin text-[#111827] mx-auto shrink-0" />
+              <h2 className="text-sm font-bold text-[#111827]">Carregando reunião...</h2>
+            </>
+          )}
+        </div>
+      </main>
+    );
+  }
+
+  // SCREEN 2: Meeting is Closed
+  if (meeting.status === 'MEETING_CLOSED') {
+    return (
+      <main id="participant-meeting-closed-screen" className="min-h-[calc(100vh-4rem)] flex items-center justify-center p-4 sm:p-6 bg-[#F9FAFB]">
+        <div className="w-full max-w-sm bg-white rounded-2xl border border-[#E5E7EB] shadow-xs p-6 sm:p-8 text-center">
+          <div className="w-12 h-12 mx-auto rounded-2xl bg-[#F3F4F6] border border-[#E5E7EB] flex items-center justify-center text-[#6B7280] mb-4">
+            <Clock className="w-6 h-6" />
+          </div>
+          <h2 className="text-xl font-bold text-[#111827] tracking-tight">
+            Reunião Encerrada
+          </h2>
+          <p className="text-sm text-[#6B7280] mt-2">
+            Esta reunião foi encerrada pelo administrador.
+          </p>
+          <p className="text-xs text-[#9CA3AF] mt-1">
+            Obrigado por sua participação.
+          </p>
+
+          <button
+            id="btn-leave-meeting-closed"
+            type="button"
+            onClick={handleLeaveMeeting}
+            className="mt-6 w-full py-3.5 px-4 bg-[#111827] hover:bg-black text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-colors cursor-pointer shadow-xs"
+          >
+            VOLTAR AO INÍCIO
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  // SCREEN 3: Active Meeting (Participant Workspace)
+  const isVotingOpen = Boolean(currentPoll && currentPoll.status === 'OPEN');
+
+  return (
+    <main id="participant-active-screen" className="min-h-[calc(100vh-4rem)] bg-[#F9FAFB] py-4 sm:py-8 px-4">
+      <div className="max-w-md mx-auto space-y-4">
+        {/* Reconnect notice banner if connection drops */}
+        {connectionStatus === 'reconnecting' && (
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2 text-amber-800 text-xs shadow-xs animate-pulse">
+            <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+            <span>Conexão perdida. Tentando reconectar automaticamente...</span>
+          </div>
+        )}
+
+        {/* Top Meeting Info Bar */}
+        <div className="bg-white rounded-2xl border border-[#E5E7EB] px-4 py-3.5 shadow-xs flex items-center justify-between">
+          <div className="min-w-0 pr-2">
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-bold text-[#111827] truncate">
+                {formatMeetingTitle(meeting.name, meeting.nominationCommissionName)}
+              </h1>
+              {participantName && (
+                <span className="text-[11px] font-bold text-[#374151] bg-[#F3F4F6] border border-[#E5E7EB] px-2 py-0.5 rounded-full shrink-0">
+                  {participantName}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="font-mono text-xs font-bold text-[#111827] bg-[#F3F4F6] border border-[#E5E7EB] px-1.5 py-0.5 rounded">
+                {meeting.code}
+              </span>
+              <span className="text-[11px] text-[#6B7280]">
+                {meeting.participantCount} {meeting.participantCount === 1 ? 'conectado' : 'conectados'}
+              </span>
+            </div>
+          </div>
+
+          <button
+            id="btn-leave-meeting"
+            type="button"
+            onClick={handleLeaveMeeting}
+            disabled={!canLeave}
+            aria-disabled={!canLeave}
+            title={
+              canLeave
+                ? 'Sair da reunião'
+                : 'Você deve permanecer na reunião até a conclusão de todas as votações'
+            }
+            className={`p-2 border border-[#E5E7EB] rounded-xl transition-colors shrink-0 ${
+              canLeave
+                ? 'text-[#6B7280] hover:text-[#111827] hover:bg-[#F3F4F6] cursor-pointer'
+                : 'text-[#D1D5DB] bg-[#F9FAFB] cursor-not-allowed opacity-50'
+            }`}
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Dynamic State Container */}
+        {isVotingOpen ? (
+          hasVotedCurrentPoll || voteSuccessNotice ? (
+            /* SUB-STATE: VOTE REGISTERED (Waiting for next poll) */
+            <section
+              id="state-vote-registered"
+              className="bg-white rounded-2xl border border-[#E5E7EB] p-6 sm:p-8 text-center shadow-xs space-y-5"
+            >
+              <div className="w-14 h-14 mx-auto rounded-full bg-green-50 border border-green-200 flex items-center justify-center text-green-700">
+                <Check className="w-7 h-7 stroke-[2.5]" />
+              </div>
+
+              <div>
+                <span className="inline-block px-3 py-0.5 text-[10px] font-bold tracking-wider text-green-800 bg-green-100/80 rounded-full mb-2 uppercase">
+                  VOTO REGISTRADO
+                </span>
+                <h2 className="text-lg font-bold text-[#111827] tracking-tight">
+                  Seu voto foi registrado com sucesso.
+                </h2>
+                <p className="text-xs text-[#6B7280] mt-1">
+                  Você já votou nesta pauta.
+                </p>
+              </div>
+
+              {/* Waiting status pill */}
+              <div className="pt-4 border-t border-[#E5E7EB] flex items-center justify-center gap-2 text-[#6B7280] text-xs">
+                <span className="w-2 h-2 rounded-full bg-[#9CA3AF] animate-pulse" />
+                <span className="font-medium">Aguardando próxima votação...</span>
+              </div>
+
+              <p className="text-[10px] text-[#9CA3AF] uppercase font-bold tracking-widest">
+                Sistema de Votação Anônimo
+              </p>
+            </section>
+          ) : (
+            /* SUB-STATE: VOTING OPEN (Choose and Confirm) */
+            <section
+              id="state-voting-open"
+              className="bg-white rounded-2xl border border-[#E5E7EB] p-5 sm:p-6 shadow-xs space-y-5"
+            >
+              {/* Poll Header */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest bg-[#111827] text-white">
+                    Votação Aberta
+                  </span>
+                  <span className="text-[11px] text-[#6B7280] font-bold uppercase tracking-wider">
+                    {isMultiple
+                      ? `${selectedOptionIds.length} de ${maxChoices} selecionadas`
+                      : 'Selecione uma opção'}
+                  </span>
+                </div>
+
+                <h2 className="text-xl font-medium leading-tight text-[#374151] italic mt-2">
+                  "{currentPoll.question}"
+                </h2>
+                <p className="text-xs text-[#6B7280] mt-1 font-medium">
+                  {isMultiple
+                    ? `Você pode escolher até ${maxChoices} ${maxChoices === 1 ? 'opção' : 'opções'}.`
+                    : 'Confirme sua escolha para a pauta atual'}
+                </p>
+              </div>
+
+              {/* Options Cards */}
+              <div className="space-y-3">
+                {currentPoll.options.map((option) => {
+                  const isSelected = selectedOptionIds.includes(option.id);
+                  const isLimitReached = isMultiple && !isSelected && selectedOptionIds.length >= maxChoices;
+
+                  return (
+                    <button
+                      key={option.id}
+                      id={`option-card-${option.id}`}
+                      type="button"
+                      onClick={() => handleToggleOption(option.id)}
+                      className={`w-full p-4 rounded-2xl flex items-center justify-between transition-all cursor-pointer ${
+                        isSelected
+                          ? 'border-2 border-[#111827] bg-[#F9FAFB] shadow-xs'
+                          : isLimitReached
+                          ? 'border border-[#E5E7EB] bg-white opacity-80 hover:border-amber-400'
+                          : 'border border-[#E5E7EB] bg-white opacity-90 hover:opacity-100 hover:border-gray-400'
+                      }`}
+                    >
+                      <span className="font-bold text-sm uppercase tracking-wide text-[#111827] text-left">
+                        {option.text}
+                      </span>
+                      {isMultiple ? (
+                        <div
+                          className={`w-5 h-5 rounded-md shrink-0 flex items-center justify-center transition-colors ${
+                            isSelected
+                              ? 'bg-[#111827] text-white border border-[#111827]'
+                              : 'border-2 border-[#E5E7EB] bg-white'
+                          }`}
+                        >
+                          {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                        </div>
+                      ) : (
+                        <div
+                          className={`w-5 h-5 rounded-full shrink-0 transition-colors ${
+                            isSelected
+                              ? 'border-4 border-[#111827] bg-white'
+                              : 'border-2 border-[#E5E7EB]'
+                          }`}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Warning notice if limit reached */}
+              {limitWarning && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+                  <span className="font-semibold">{limitWarning}</span>
+                </div>
+              )}
+
+              {/* Error notice if any */}
+              {errorMsg && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{errorMsg}</span>
+                </div>
+              )}
+
+              {/* Confirm Vote Button */}
+              <div className="pt-2">
+                <button
+                  id="btn-confirm-vote"
+                  type="button"
+                  disabled={!canConfirm || isSubmittingVote}
+                  onClick={handleConfirmVote}
+                  className="w-full bg-[#111827] text-white py-4 sm:py-5 rounded-2xl font-bold uppercase tracking-widest text-sm shadow-md hover:bg-black transition-all cursor-pointer disabled:bg-[#E5E7EB] disabled:text-[#9CA3AF] disabled:shadow-none disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isSubmittingVote ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Registrando voto...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>
+                        {isMultiple
+                          ? selectedOptionIds.length > 0
+                            ? `Confirmar Voto (${selectedOptionIds.length} ${
+                                selectedOptionIds.length === 1 ? 'opção' : 'opções'
+                              })`
+                            : `Selecione até ${maxChoices} opções`
+                          : 'Confirmar Voto'}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <p className="text-[10px] text-center mt-4 text-[#9CA3AF] uppercase font-bold tracking-widest">
+                Sistema de Votação Anônimo
+              </p>
+            </section>
+          )
+        ) : (
+          /* SUB-STATE: WAITING FOR VOTING TO START */
+          <section
+            id="state-waiting-poll"
+            className="bg-white rounded-2xl border border-[#E5E7EB] p-6 sm:p-8 text-center shadow-xs space-y-4"
+          >
+            <div className="w-12 h-12 mx-auto rounded-2xl bg-[#F3F4F6] border border-[#E5E7EB] flex items-center justify-center text-[#6B7280]">
+              <Clock className="w-6 h-6 animate-pulse" />
+            </div>
+
+            <div>
+              <span className="inline-block px-3 py-1 text-xs font-bold uppercase tracking-wider text-[#6B7280] bg-[#F3F4F6] border border-[#E5E7EB] rounded-full mb-2">
+                AGUARDANDO
+              </span>
+              <h2 className="text-lg font-bold text-[#111827] tracking-tight">
+                Aguardando o início da votação...
+              </h2>
+              <p className="text-xs text-[#6B7280] mt-2 max-w-xs mx-auto">
+                A pauta aparecerá automaticamente na sua tela assim que o administrador abrir a votação.
+              </p>
+            </div>
+
+            <div className="pt-4 border-t border-[#E5E7EB] flex items-center justify-center gap-2 text-[11px] text-[#6B7280]">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <span>Conectado em tempo real</span>
+            </div>
+          </section>
+        )}
+      </div>
+    </main>
+  );
+};

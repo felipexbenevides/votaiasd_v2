@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/church-logo.svg" />
+    <title>VOTAIASD</title>
+    <meta name="description" content="Sistema profissional em tempo real para votações anônimas em reuniões, assembleias e comissões." />
+    <meta property="og:title" content="VOTAIASD" />
+    <meta property="og:description" content="Sistema profissional em tempo real para votações anônimas em reuniões, assembleias e comissões." />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#111827" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="VOTAIASD" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <script>
+      // Captura antecipada e preservação do evento nativo beforeinstallprompt do PWA
+      (function() {
+        if (typeof window !== 'undefined') {
+          window.__deferredInstallPrompt = null;
+          window.addEventListener('beforeinstallprompt', function(e) {
+            e.preventDefault();
+            window.__deferredInstallPrompt = e;
+            window.dispatchEvent(new CustomEvent('pwa-prompt-available'));
+          });
+          window.addEventListener('appinstalled', function() {
+            window.__deferredInstallPrompt = null;
+            window.dispatchEvent(new CustomEvent('pwa-app-installed'));
+          });
+        }
+      })();
+    </script>
+    <script>
+      // Tratamento específico para o WebSocket do Vite HMR no ambiente de Preview.
+      // O HMR do Vite é desabilitado na plataforma de Preview, pois a comunicação em tempo real
+      // da aplicação VOTAIASD opera 100% via Server-Sent Events (SSE).
+      // Este script intercepta exclusivamente o subprotocolo "vite-hmr", prevenindo falhas de conexão
+      // externas à porta HMR do Vite e eliminando os logs de "failed to connect to websocket".
+      (function() {
+        if (typeof window !== 'undefined' && window.WebSocket) {
+          var OrigWebSocket = window.WebSocket;
+          var MockHmrWebSocket = function(url, protocols) {
+            var isViteHmr = protocols === 'vite-hmr' || (Array.isArray(protocols) && protocols.indexOf('vite-hmr') !== -1);
+            if (isViteHmr) {
+              var target = new EventTarget();
+              target.CONNECTING = 0;
+              target.OPEN = 1;
+              target.CLOSING = 2;
+              target.CLOSED = 3;
+              target.readyState = 1; // OPEN imediato
+              target.url = url;
+              target.protocol = 'vite-hmr';
+              target.bufferedAmount = 0;
+              target.binaryType = 'blob';
+              target.extensions = '';
+              target.send = function() {};
+              target.close = function() {
+                target.readyState = 3;
+              };
+              ['open', 'close', 'message', 'error'].forEach(function(evt) {
+                var handler = null;
+                Object.defineProperty(target, 'on' + evt, {
+                  get: function() { return handler; },
+                  set: function(fn) {
+                    if (handler) target.removeEventListener(evt, handler);
+                    handler = fn;
+                    if (handler) target.addEventListener(evt, handler);
+                  }
+                });
+              });
+              setTimeout(function() {
+                target.dispatchEvent(new Event('open'));
+              }, 0);
+              return target;
+            }
+            return new OrigWebSocket(url, protocols);
+          };
+          MockHmrWebSocket.CONNECTING = 0;
+          MockHmrWebSocket.OPEN = 1;
+          MockHmrWebSocket.CLOSING = 2;
+          MockHmrWebSocket.CLOSED = 3;
+          MockHmrWebSocket.prototype = OrigWebSocket.prototype;
+          window.WebSocket = MockHmrWebSocket;
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

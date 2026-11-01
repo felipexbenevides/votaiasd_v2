@@ -1,0 +1,11 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Zero-Trust Security Policy:
+    // Direct client read and write access is completely disabled.
+    // All data access is mediated exclusively server-side by the authorized backend via Firebase Admin SDK.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

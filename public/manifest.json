@@ -1,0 +1,33 @@
+{
+  "id": "/",
+  "name": "VOTAIASD",
+  "short_name": "VOTAIASD",
+  "description": "Sistema profissional em tempo real para votações anônimas em reuniões, assembleias e comissões.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "lang": "pt-BR",
+  "orientation": "any",
+  "background_color": "#F9FAFB",
+  "theme_color": "#111827",
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+@keyframes spin-counterclockwise {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+.animate-spin-ccw,
+.animate-spin-reverse {
+  animation: spin-counterclockwise 0.9s linear infinite;
+}
+
+@media print {
+  /* Hide all top bars, admin navigation, buttons, footers, backdrop dark overlays */
+  header,
+  #btn-admin-close-meeting,
+  #btn-copy-code,
+  #btn-copy-link,
+  #btn-view-qr-code,
+  #btn-qr-fullscreen,
+  #btn-start-new-poll,
+  #btn-print-report,
+  #admin-meeting-select,
+  #modal-create-meeting-backdrop,
+  #qr-code-modal-backdrop,
+  #projection-result-overlay,
+  .no-print,
+  button,
+  input,
+  textarea {
+    display: none !important;
+  }
+
+  body {
+    background-color: white !important;
+    color: black !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  main {
+    background-color: white !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* ATA Modal Printing Styles */
+  #modal-ata-backdrop {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+  }
+
+  #modal-ata-container {
+    box-shadow: none !important;
+    border: none !important;
+    background: white !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  #ata-printable-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    font-size: 12pt !important;
+    display: block !important;
+  }
+
+  .shadow-2xs,
+  .shadow-xs,
+  .shadow-sm,
+  .shadow-md,
+  .shadow-lg,
+  .shadow-xl,
+  .shadow-2xl {
+    box-shadow: none !important;
+  }
+}
+
